@@ -2,6 +2,7 @@ package pinger
 
 import (
 	"errors"
+	"flag"
 	"log"
 	"net"
 	"os"
@@ -16,6 +17,8 @@ import (
 )
 
 var (
+	interval = flag.Duration("ping-interval", 60*time.Second, "Ping interval")
+
 	pingerSendDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
 		Name:       "arpwatch_pinger_send_duration_seconds",
 		Help:       "The number of seconds sending out pings to the network took",
@@ -23,28 +26,22 @@ var (
 	}, []string{"iface"})
 )
 
-type PingerOpts struct {
-	Iface    net.Interface
-	Network  net.IPNet
-	Report   chan<- reporter.Ping
-	Interval time.Duration
-}
-
 type Pinger struct {
-	opts PingerOpts
+	iface   net.Interface
+	network net.IPNet
 }
 
-func New(opts PingerOpts) *Pinger {
-	return &Pinger{opts}
+func New(iface net.Interface, network net.IPNet) *Pinger {
+	return &Pinger{iface, network}
 }
 
 func (p *Pinger) Run(stop <-chan struct{}) error {
-	c, err := icmp.ListenPacket("ip4:icmp", p.opts.Network.IP.String())
+	c, err := icmp.ListenPacket("ip4:icmp", p.network.IP.String())
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Pinger listening for ICMP on %v", p.opts.Network.IP)
+	log.Printf("Pinger listening for ICMP on %v", p.network.IP)
 
 	done := make(chan error)
 
@@ -79,16 +76,16 @@ func (p *Pinger) sender(c *icmp.PacketConn, stop <-chan struct{}) error {
 
 	for {
 		start := time.Now()
-		for _, addr := range utils.EnumerateIPs(&p.opts.Network) {
+		for _, addr := range utils.EnumerateIPs(&p.network) {
 			if _, err := c.WriteTo(wb, &net.IPAddr{IP: addr}); err != nil {
 				return err
 			}
 		}
 		elapsed := time.Since(start)
 
-		pingerSendDuration.WithLabelValues(p.opts.Iface.Name).Observe(elapsed.Seconds())
+		pingerSendDuration.WithLabelValues(p.iface.Name).Observe(elapsed.Seconds())
 
-		sleep := 1*p.opts.Interval - elapsed
+		sleep := *interval - elapsed
 		if sleep < 0 {
 			log.Printf("Warning: Pinger is sending slower than interval")
 			sleep = 100 * time.Millisecond
@@ -122,7 +119,7 @@ func (p *Pinger) receiver(c *icmp.PacketConn) error {
 		switch rm.Type {
 		case ipv4.ICMPTypeEchoReply:
 			ip := peer.(*net.IPAddr).IP
-			p.opts.Report <- reporter.Ping{IP: ip}
+			reporter.Ping(nil, ip)
 		default:
 			// Ignore.
 		}

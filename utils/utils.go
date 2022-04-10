@@ -1,8 +1,11 @@
 package utils
 
 import (
+	"bufio"
 	"errors"
 	"net"
+	"os"
+	"strings"
 
 	"encoding/binary"
 )
@@ -38,4 +41,21 @@ func EnumerateIPs(n *net.IPNet) (out []net.IP) {
 		out = append(out, net.IP(buf[:]))
 	}
 	return
+}
+
+func ReadFirstLine(path string) (*string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Scan()
+	line := strings.TrimSpace(scanner.Text())
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return &line, nil
 }

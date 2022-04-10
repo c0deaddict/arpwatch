@@ -13,11 +13,10 @@ import (
 type Watcher struct {
 	iface   net.Interface
 	network net.IPNet
-	report  chan<- reporter.Ping
 }
 
-func New(iface net.Interface, network net.IPNet, report chan<- reporter.Ping) *Watcher {
-	return &Watcher{iface, network, report}
+func New(iface net.Interface, network net.IPNet) *Watcher {
+	return &Watcher{iface, network}
 }
 
 func (w *Watcher) Start(stop <-chan struct{}) error {
@@ -61,10 +60,9 @@ func (w *Watcher) loop(handle *pcap.Handle, stop <-chan struct{}) {
 				continue
 			}
 
-			w.report <- reporter.Ping{
-				IP:  net.IP(arp.SourceProtAddress),
-				MAC: net.HardwareAddr(arp.SourceHwAddress),
-			}
+			mac := net.HardwareAddr(arp.SourceHwAddress)
+			ip := net.IP(arp.SourceProtAddress)
+			reporter.Ping(mac, ip)
 		}
 	}
 }

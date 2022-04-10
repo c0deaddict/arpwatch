@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/c0deaddict/arpwatch/utils"
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/influxdata/influxdb-client-go/v2/api"
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +16,7 @@ import (
 var (
 	serverUrl = flag.String("influxdb-url", "http://localhost:8086", "InfluxDB server url")
 	token     = flag.String("influxdb-token", "", "InfluxDB authentication token")
+	tokenFile = flag.String("influxdb-token-file", "", "InfluxDB authentication token file (takes precedence over influxdb-token)")
 	org       = flag.String("influxdb-org", "", "InfluxDB organization")
 	bucket    = flag.String("influxdb-bucket", "arpwatch", "InfluxDB bucket")
 
@@ -28,10 +30,14 @@ var (
 )
 
 func Connect() error {
+	token, err := readToken()
+	if err != nil {
+		return err
+	}
+
 	client = influxdb2.NewClient(*serverUrl, *token)
 
-	_, err := client.Health(context.Background())
-	if err != nil {
+	if _, err := client.Health(context.Background()); err != nil {
 		client.Close()
 		return err
 	}
@@ -56,6 +62,11 @@ func Close() {
 }
 
 func WritePoint(ip string, mac string, online bool) {
+	value := 0
+	if online {
+		value = 1
+	}
+
 	p := influxdb2.NewPoint(
 		"host",
 		map[string]string{
@@ -63,7 +74,7 @@ func WritePoint(ip string, mac string, online bool) {
 			"mac": mac,
 		},
 		map[string]interface{}{
-			"online": online,
+			"online": value,
 		},
 		time.Now(),
 	)
@@ -71,4 +82,16 @@ func WritePoint(ip string, mac string, online bool) {
 	// Writes are asynchronous.
 	// By default batched per 5000 and flushed every 1s.
 	writeAPI.WritePoint(p)
+}
+
+func readToken() (*string, error) {
+	if *tokenFile != "" {
+		if token, err := utils.ReadFirstLine(*tokenFile); err != nil {
+			return nil, err
+		} else {
+			return token, nil
+		}
+	}
+
+	return token, nil
 }

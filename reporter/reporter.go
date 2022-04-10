@@ -13,7 +13,8 @@ import (
 )
 
 var (
-	offlineLag = flag.Duration("offline-lag", 30*time.Second, "Consider a host as offline after interval + offline-lag")
+	interval   = flag.Duration("report-interval", 60*time.Second, "Report interval")
+	offlineLag = flag.Duration("offline-lag", 30*time.Second, "Consider a host as offline after report-interval + offline-lag")
 
 	knownHosts = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "arpwatch_known_hosts",
@@ -24,9 +25,12 @@ var (
 		Name: "arpwatch_host_up",
 		Help: "Indicates if the host was up or not",
 	}, []string{"ip", "mac"})
+
+	ch    = make(chan ping, 10)
+	hosts = make(map[string]*hostInfo)
 )
 
-type Ping struct {
+type ping struct {
 	MAC net.HardwareAddr
 	IP  net.IP
 }
@@ -46,39 +50,37 @@ type hostInfo struct {
 	state state
 }
 
-type Reporter struct {
-	interval time.Duration
-	hosts    map[string]*hostInfo
-	ch       <-chan Ping
+func Start() {
+	go run()
 }
 
-func New(interval time.Duration, ch <-chan Ping) *Reporter {
-	return &Reporter{
-		interval: interval,
-		hosts:    make(map[string]*hostInfo),
-		ch:       ch,
-	}
+func Stop() {
+	close(ch)
 }
 
-func (r *Reporter) Run() {
-	timer := time.NewTicker(r.interval)
+func Ping(mac net.HardwareAddr, ip net.IP) {
+	ch <- ping{mac, ip}
+}
+
+func run() {
+	timer := time.NewTicker(*interval)
 	defer timer.Stop()
 
 	for {
 		select {
-		case ping, ok := <-r.ch:
+		case ping, ok := <-ch:
 			if !ok {
 				return
 			}
-			r.process(&ping)
+			process(&ping)
 
 		case <-timer.C:
-			r.report()
+			report()
 		}
 	}
 }
 
-func (r *Reporter) process(p *Ping) {
+func process(p *ping) {
 	if p.MAC == nil {
 		log.Printf("IP %v is alive", p.IP)
 	} else {
@@ -86,7 +88,7 @@ func (r *Reporter) process(p *Ping) {
 	}
 
 	ip := p.IP.String()
-	if info, ok := r.hosts[ip]; ok {
+	if info, ok := hosts[ip]; ok {
 		if p.MAC != nil {
 			if info.mac != nil && bytes.Compare(p.MAC, info.mac) != 0 {
 				log.Printf("%v changed from %v to %v", ip, info.mac, p.MAC)
@@ -97,7 +99,7 @@ func (r *Reporter) process(p *Ping) {
 
 		info.seen = time.Now()
 	} else {
-		r.hosts[ip] = &hostInfo{
+		hosts[ip] = &hostInfo{
 			mac:   p.MAC,
 			seen:  time.Now(),
 			state: STATE_NEW,
@@ -105,19 +107,20 @@ func (r *Reporter) process(p *Ping) {
 	}
 }
 
-func (r *Reporter) report() {
+func report() {
 	now := time.Now()
 
-	knownHosts.Set(float64(len(r.hosts)))
+	knownHosts.Set(float64(len(hosts)))
 
-	for ip, info := range r.hosts {
+	for ip, info := range hosts {
 		if info.state == STATE_NEW {
 			log.Printf("New host discovered: %v", ip)
 			info.state = STATE_ONLINE
+			// presence.NewHost(ip, info.mac)
 		}
 
-		if now.Sub(info.seen) >= r.interval+*offlineLag {
-			log.Printf("IP %v (%v) not seen in last %v\n", ip, info.mac, r.interval*2)
+		if now.Sub(info.seen) >= *interval+*offlineLag {
+			log.Printf("IP %v (%v) not seen in last %v\n", ip, info.mac, *interval*2)
 			info.state = STATE_OFFLINE
 		} else if info.state == STATE_OFFLINE {
 			log.Printf("IP %v (%v) is back!\n", ip, info.mac)

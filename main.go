@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/c0deaddict/arpwatch/metrics"
 	"github.com/c0deaddict/arpwatch/pinger"
@@ -16,20 +16,24 @@ import (
 	"github.com/c0deaddict/arpwatch/storage"
 	"github.com/c0deaddict/arpwatch/utils"
 	"github.com/c0deaddict/arpwatch/watcher"
+	"github.com/peterbourgon/ff"
 )
 
 // presence for mqtt
 
 var (
 	ifaceNames = utils.StringSliceFlag("iface", []string{}, "interfaces to watch")
-	interval   = flag.Duration("interval", 60*time.Second, "interval")
+	_          = flag.String("config", "", "config file (optional)")
 
 	ifaces   []net.Interface
 	networks []*net.IPNet
 )
 
 func main() {
-	flag.Parse()
+	ff.Parse(flag.CommandLine, os.Args[1:],
+		ff.WithEnvVarPrefix("ARPWATCH"),
+		ff.WithConfigFileFlag("config"),
+		ff.WithConfigFileParser(ff.PlainParser))
 
 	if err := findInterfaces(); err != nil {
 		log.Fatalln(err)
@@ -37,17 +41,19 @@ func main() {
 
 	go metrics.Run()
 
+	// if err := presence.Connect(); err != nil {
+	// 	log.Fatalln(err)
+	// }
+	// defer presence.Close()
+
 	if err := storage.Connect(); err != nil {
 		log.Fatalln(err)
 	}
 	defer storage.Close()
 
 	// Set up and start the reporter.
-	ch := make(chan reporter.Ping, 10)
-	defer close(ch)
-
-	reporter := reporter.New(*interval, ch)
-	go reporter.Run()
+	reporter.Start()
+	defer reporter.Stop()
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -55,12 +61,7 @@ func main() {
 	var wg sync.WaitGroup
 	for i, iface := range ifaces {
 		// Start a Pinger on each interface.
-		p := pinger.New(pinger.PingerOpts{
-			Iface:    iface,
-			Network:  *networks[i],
-			Report:   ch,
-			Interval: *interval,
-		})
+		p := pinger.New(iface, *networks[i])
 		wg.Add(1)
 		go func(iface net.Interface) {
 			defer wg.Done()
@@ -71,7 +72,7 @@ func main() {
 		}(iface)
 
 		// Start up a watcher on each interface.
-		w := watcher.New(iface, *networks[i], ch)
+		w := watcher.New(iface, *networks[i])
 		if err := w.Start(stop); err != nil {
 			log.Fatalln(err)
 		}
@@ -92,6 +93,7 @@ func findInterfaces() error {
 	}
 
 	// Filter on the requested interfaces.
+	log.Println("Discovering interfaces, * = selected")
 	for _, iface := range allIfaces {
 		found := false
 		for i, name := range *ifaceNames {
@@ -103,6 +105,9 @@ func findInterfaces() error {
 		}
 		if found {
 			ifaces = append(ifaces, iface)
+			log.Printf("* %v", iface.Name)
+		} else {
+			log.Printf("  %v", iface.Name)
 		}
 	}
 
